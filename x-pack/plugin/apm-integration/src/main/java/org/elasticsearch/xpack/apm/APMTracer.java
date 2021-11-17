@@ -7,104 +7,74 @@
 
 package org.elasticsearch.xpack.apm;
 
-import io.opentelemetry.api.OpenTelemetry;
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.Tracer;
-import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
-import io.opentelemetry.context.propagation.ContextPropagators;
-import io.opentelemetry.sdk.OpenTelemetrySdk;
-import io.opentelemetry.sdk.common.CompletableResultCode;
-import io.opentelemetry.sdk.trace.SdkTracerProvider;
-import io.opentelemetry.sdk.trace.data.SpanData;
-import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
-import io.opentelemetry.sdk.trace.export.SpanExporter;
+import co.elastic.apm.agent.impl.ElasticApmTracer;
+import co.elastic.apm.agent.impl.ElasticApmTracerBuilder;
+import co.elastic.apm.agent.impl.transaction.AbstractSpan;
+import co.elastic.apm.agent.impl.transaction.Transaction;
 
-import org.elasticsearch.Version;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.plugins.TracingPlugin;
 import org.elasticsearch.tasks.Task;
+import org.stagemonitor.configuration.source.SimpleSource;
 
-import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
 public class APMTracer extends AbstractLifecycleComponent implements TracingPlugin.Tracer {
 
-    public static final CapturingSpanExporter CAPTURING_SPAN_EXPORTER = new CapturingSpanExporter();
+    private final Map<Long, AbstractSpan<?>> taskSpans = ConcurrentCollections.newConcurrentMap();
 
-    private final Map<Long, Span> taskSpans = ConcurrentCollections.newConcurrentMap();
-
-    private volatile Tracer tracer;
+    private volatile ElasticApmTracer tracer;
 
     @Override
     protected void doStart() {
-        SdkTracerProvider sdkTracerProvider = SdkTracerProvider.builder()
-            .addSpanProcessor(SimpleSpanProcessor.create(CAPTURING_SPAN_EXPORTER))
-            .build();
+        SimpleSource configSource = new SimpleSource()
+            .add("service_name", "elasticsearch")
+            .add("server_url", "https://8c5a522cb80f4f9d93e0ffa318290e2e.apm.eu-central-1.aws.cloud.es.io:443")
+            .add("api_key", "UHFETjAzQUJ3SHFETFNjM2FGVmE6X0oyQWpWM2RTZy1zdDNsbXpuRHRFZw==")
+            .add("application_packages", "org.elasticsearch")
+            .add("hostname", "es-test") // needs to be provided as we can't execute 'uname -a' or 'hostname' commands to get it
+            .add("log_level", "debug");
 
-        OpenTelemetry openTelemetry = OpenTelemetrySdk.builder()
-            .setTracerProvider(sdkTracerProvider)
-            .setPropagators(ContextPropagators.create(W3CTraceContextPropagator.getInstance()))
-            .build();
+        tracer = new ElasticApmTracerBuilder(List.of(configSource)).build();
+        tracer.start(false);
 
-        tracer = openTelemetry.getTracer("elasticsearch", Version.CURRENT.toString());
-        tracer.spanBuilder("startup").startSpan().end();
+        Transaction rootTransaction = tracer.startRootTransaction(APMTracer.class.getClassLoader());
+        rootTransaction.withName("startup").end();
     }
 
     @Override
-    protected void doStop() {}
+    protected void doStop() {
+        // force all captured data to be sent
+        tracer.getReporter().flush();
+    }
 
     @Override
-    protected void doClose() {}
+    protected void doClose() {
+    }
 
     @Override
     public void onTaskRegistered(Task task) {
-        final Tracer tracer = this.tracer;
-        if (tracer != null) {
-            taskSpans.computeIfAbsent(task.getId(), taskId -> {
-                final Span span = tracer.spanBuilder(task.getAction()).startSpan();
-                span.setAttribute("es.task.id", task.getId());
-                return span;
-            });
+        if (tracer == null) {
+            return;
         }
+
+        taskSpans.computeIfAbsent(task.getId(), taskId -> {
+            Transaction transaction = tracer.startRootTransaction(APMTracer.class.getClassLoader())
+                .withType("task")
+                .withName(task.getAction());
+            transaction.addCustomContext("es_task_id", task.getId());
+            return transaction;
+        });
+
     }
 
     @Override
     public void onTaskUnregistered(Task task) {
-        final Span span = taskSpans.remove(task.getId());
+        final AbstractSpan<?> span = taskSpans.remove(task.getId());
         if (span != null) {
             span.end();
-        }
-    }
-
-    public static class CapturingSpanExporter implements SpanExporter {
-
-        private List<SpanData> capturedSpans = new ArrayList<>();
-
-        public void clear() {
-            capturedSpans.clear();
-        }
-
-        public List<SpanData> getCapturedSpans() {
-            return List.copyOf(capturedSpans);
-        }
-
-        @Override
-        public CompletableResultCode export(Collection<SpanData> spans) {
-            capturedSpans.addAll(spans);
-            return CompletableResultCode.ofSuccess();
-        }
-
-        @Override
-        public CompletableResultCode flush() {
-            return CompletableResultCode.ofSuccess();
-        }
-
-        @Override
-        public CompletableResultCode shutdown() {
-            return CompletableResultCode.ofSuccess();
         }
     }
 }

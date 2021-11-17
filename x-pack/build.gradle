@@ -18,6 +18,7 @@ subprojects {
         includeGroup "net.shibboleth"
       }
     }
+    mavenLocal()
   }
 
   group = 'org.elasticsearch.plugin'
