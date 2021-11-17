@@ -34,7 +34,7 @@ public class APMTracer extends AbstractLifecycleComponent implements TracingPlug
         SimpleSource configSource = new SimpleSource()
             .add("service_name", "elasticsearch")
             .add("server_url", "https://8c5a522cb80f4f9d93e0ffa318290e2e.apm.eu-central-1.aws.cloud.es.io:443")
-            .add("api_key", "UHFETjAzQUJ3SHFETFNjM2FGVmE6X0oyQWpWM2RTZy1zdDNsbXpuRHRFZw==")
+            .add("api_key", "")
             .add("application_packages", "org.elasticsearch")
             .add("hostname", "es-test") // needs to be provided as we can't execute 'uname -a' or 'hostname' commands to get it
             .add("log_level", "debug");
