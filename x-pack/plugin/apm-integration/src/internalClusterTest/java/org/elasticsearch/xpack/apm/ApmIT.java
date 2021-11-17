@@ -8,8 +8,6 @@
 package org.elasticsearch.xpack.apm;
 
 import co.elastic.apm.agent.impl.ElasticApmTracer;
-import co.elastic.apm.agent.impl.ElasticApmTracerBuilder;
-import co.elastic.apm.agent.impl.transaction.Transaction;
 
 import org.elasticsearch.common.util.CollectionUtils;
 import org.elasticsearch.plugins.Plugin;
@@ -22,7 +20,6 @@ import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.transport.TransportService;
 import org.junit.After;
 import org.junit.Before;
-import org.stagemonitor.configuration.source.SimpleSource;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -42,28 +39,11 @@ public class ApmIT extends ESIntegTestCase {
 
     @Before
     public void setup() {
-
-        SimpleSource configSource = new SimpleSource()
-            .add("service_name", "elasticsearch")
-            .add("server_url", "https://8c5a522cb80f4f9d93e0ffa318290e2e.apm.eu-central-1.aws.cloud.es.io:443")
-            .add("api_key", "UHFETjAzQUJ3SHFETFNjM2FGVmE6X0oyQWpWM2RTZy1zdDNsbXpuRHRFZw==")
-            .add("application_packages", "org.elasticsearch")
-            .add("hostname", "es-test") // needs to be provided as we can't execute 'uname -a' or 'hostname' commands to get it
-            .add("log_level", "debug");
-
-        tracer = new ElasticApmTracerBuilder(List.of(configSource)).build();
-        tracer.start(false);
-
-        Transaction rootTransaction = tracer.startRootTransaction(ApmIT.class.getClassLoader());
-        rootTransaction.withName("hello from ES with Elastic agent").end();
-
-        // force all captured data to be sent
-        tracer.getReporter().flush();
     }
 
     @After
     public void cleanup() {
-        tracer.stop();
+
     }
 
     public void testModule() {

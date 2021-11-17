@@ -18,6 +18,8 @@ import org.elasticsearch.plugins.TracingPlugin;
 import org.elasticsearch.tasks.Task;
 import org.stagemonitor.configuration.source.SimpleSource;
 
+import java.security.AccessController;
+import java.security.PrivilegedAction;
 import java.util.List;
 import java.util.Map;
 
@@ -37,8 +39,11 @@ public class APMTracer extends AbstractLifecycleComponent implements TracingPlug
             .add("hostname", "es-test") // needs to be provided as we can't execute 'uname -a' or 'hostname' commands to get it
             .add("log_level", "debug");
 
-        tracer = new ElasticApmTracerBuilder(List.of(configSource)).build();
-        tracer.start(false);
+        tracer = AccessController.doPrivileged((PrivilegedAction<ElasticApmTracer>) () -> {
+            ElasticApmTracer tracer = new ElasticApmTracerBuilder(List.of(configSource)).build();
+            tracer.start(false);
+            return tracer;
+        });
 
         Transaction rootTransaction = tracer.startRootTransaction(APMTracer.class.getClassLoader());
         rootTransaction.withName("startup").end();
@@ -52,6 +57,7 @@ public class APMTracer extends AbstractLifecycleComponent implements TracingPlug
 
     @Override
     protected void doClose() {
+        tracer.stop();
     }
 
     @Override
