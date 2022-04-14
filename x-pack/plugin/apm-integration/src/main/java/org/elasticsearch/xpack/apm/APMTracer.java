@@ -197,6 +197,8 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
 
             threadContext.putHeader(spanHeaders);
 
+            threadContext.removeTransient(LOCAL_CONTEXT_PARENT);
+
             threadContext.putTransient(LOCAL_CONTEXT_PARENT, context);
 
             // logGraphviz(span);

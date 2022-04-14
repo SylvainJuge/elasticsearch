@@ -469,6 +469,10 @@ public final class ThreadContext implements Writeable {
         threadLocal.set(threadLocal.get().putTransient(key, value));
     }
 
+    public void removeTransient(String key) {
+        threadLocal.set(threadLocal.get().removeTransient(key));
+    }
+
     /**
      * Returns a transient header object or <code>null</code> if there is no header for the given key
      */
@@ -736,6 +740,12 @@ public final class ThreadContext implements Writeable {
         private ThreadContextStruct putTransient(String key, Object value) {
             Map<String, Object> newTransient = new HashMap<>(this.transientHeaders);
             putSingleHeader(key, value, newTransient);
+            return new ThreadContextStruct(requestHeaders, responseHeaders, newTransient, isSystemContext);
+        }
+
+        public ThreadContextStruct removeTransient(String key) {
+            Map<String, Object> newTransient = new HashMap<>(this.transientHeaders);
+            newTransient.remove(key);
             return new ThreadContextStruct(requestHeaders, responseHeaders, newTransient, isSystemContext);
         }
 
