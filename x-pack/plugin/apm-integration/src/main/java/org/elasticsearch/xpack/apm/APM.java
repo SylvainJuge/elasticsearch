@@ -33,6 +33,8 @@ import java.util.function.Supplier;
 public class APM extends Plugin implements NetworkPlugin {
     public static final Set<String> TRACE_HEADERS = Set.of(Task.TRACE_PARENT_HTTP_HEADER, Task.TRACE_STATE);
 
+    public static final String LOCAL_CONTEXT_PARENT = "apm.local.parent";
+
     private final SetOnce<APMTracer> tracer = new SetOnce<>();
     private final Settings settings;
 

@@ -44,6 +44,7 @@ import java.util.stream.Collectors;
 
 import static org.elasticsearch.common.settings.Setting.Property.Dynamic;
 import static org.elasticsearch.common.settings.Setting.Property.NodeScope;
+import static org.elasticsearch.xpack.apm.APM.LOCAL_CONTEXT_PARENT;
 import static org.elasticsearch.xpack.apm.APM.TRACE_HEADERS;
 
 public class APMTracer extends AbstractLifecycleComponent implements org.elasticsearch.tracing.Tracer {
@@ -59,7 +60,7 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
         NodeScope
     );
 
-    private final Map<String, Span> spans = ConcurrentCollections.newConcurrentMap();
+    private final Map<String, Context> spans = ConcurrentCollections.newConcurrentMap();
     private final ThreadPool threadPool;
     private final ClusterService clusterService;
 
@@ -71,7 +72,8 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
     /**
      * This class is required to make all open telemetry services visible at once
      */
-    private record APMServices(Tracer tracer, OpenTelemetry openTelemetry) {}
+    private record APMServices(Tracer tracer, OpenTelemetry openTelemetry) {
+    }
 
     public APMTracer(Settings settings, ThreadPool threadPool, ClusterService clusterService) {
         this.threadPool = Objects.requireNonNull(threadPool);
@@ -143,9 +145,15 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
             return;
         }
 
-        spans.computeIfAbsent(traceable.getSpanId(), spanId -> AccessController.doPrivileged((PrivilegedAction<Span>) () -> {
+        spans.computeIfAbsent(traceable.getSpanId(), spanId -> AccessController.doPrivileged((PrivilegedAction<Context>) () -> {
+            // services might be in shutdown state by this point, but this is handled by the open telemetry internally
             final SpanBuilder spanBuilder = services.tracer.spanBuilder(traceable.getSpanName());
-            Context parentContext = getParentSpanContext();
+
+            // local parent first, remote parent as fallback
+            Context parentContext = getLocalParentContext();
+            if (parentContext == null) {
+                parentContext = getRemoteParentContext();
+            }
             if (parentContext != null) {
                 spanBuilder.setParent(parentContext);
             }
@@ -180,23 +188,25 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
                 spanBuilder.setAttribute("es.x-opaque-id", xOpaqueId);
             }
             final Span span = spanBuilder.startSpan();
+            final Context context = Context.current().with(span);
 
+            // TODO : we should probably only do that lazily only when it's sent on the wire
             final Map<String, String> spanHeaders = new HashMap<>();
-            final Context contextForNewSpan = Context.current().with(span);
-            services.openTelemetry.getPropagators().getTextMapPropagator().inject(contextForNewSpan, spanHeaders, Map::put);
+            services.openTelemetry.getPropagators().getTextMapPropagator().inject(context, spanHeaders, Map::put);
             spanHeaders.keySet().removeIf(k -> isSupportedContextKey(k) == false);
 
             threadContext.putHeader(spanHeaders);
 
-//             logGraphviz(span);
+            threadContext.putTransient(LOCAL_CONTEXT_PARENT, context);
 
-            return span;
+            // logGraphviz(span);
+            return context;
         }));
     }
 
     @Override
     public void onTraceException(Traceable traceable, Throwable throwable) {
-        final var span = spans.get(traceable.getSpanId());
+        final var span = getSpan(traceable);
         if (span != null) {
             span.recordException(throwable);
         }
@@ -204,7 +214,7 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
 
     @Override
     public void setAttribute(Traceable traceable, String key, boolean value) {
-        final var span = spans.get(traceable.getSpanId());
+        final var span = getSpan(traceable);
         if (span != null) {
             span.setAttribute(key, value);
         }
@@ -212,7 +222,7 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
 
     @Override
     public void setAttribute(Traceable traceable, String key, double value) {
-        final var span = spans.get(traceable.getSpanId());
+        final var span = getSpan(traceable);
         if (span != null) {
             span.setAttribute(key, value);
         }
@@ -220,7 +230,7 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
 
     @Override
     public void setAttribute(Traceable traceable, String key, long value) {
-        final var span = spans.get(traceable.getSpanId());
+        final var span = getSpan(traceable);
         if (span != null) {
             span.setAttribute(key, value);
         }
@@ -228,10 +238,14 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
 
     @Override
     public void setAttribute(Traceable traceable, String key, String value) {
-        final var span = spans.get(traceable.getSpanId());
+        final var span = getSpan(traceable);
         if (span != null) {
             span.setAttribute(key, value);
         }
+    }
+
+    private Span getSpan(Traceable traceable){
+        return Span.fromContextOrNull(spans.get(traceable.getSpanId()));
     }
 
     private boolean isSpanNameIncluded(String name) {
@@ -240,7 +254,7 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
         return includeNames.isEmpty() || Regex.simpleMatch(includeNames, name);
     }
 
-    private Context getParentSpanContext() {
+    private Context getRemoteParentContext() {
         // Check for a parent context in the thread context.
         final ThreadContext threadContext = threadPool.getThreadContext();
         final String traceParentHeader = threadContext.getTransient("parent_" + Task.TRACE_PARENT_HTTP_HEADER);
@@ -260,9 +274,16 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
         return null;
     }
 
+    private Context getLocalParentContext() {
+        Context parent = threadPool.getThreadContext().getTransient(LOCAL_CONTEXT_PARENT);
+        return parent;
+    }
+
     @Override
     public void onTraceStopped(Traceable traceable) {
-        final var span = spans.remove(traceable.getSpanId());
+        final var context = spans.remove(traceable.getSpanId());
+
+        final var span = Span.fromContextOrNull(context);
         if (span != null) {
             span.end();
         }
@@ -270,7 +291,7 @@ public class APMTracer extends AbstractLifecycleComponent implements org.elastic
 
     @Override
     public void onTraceEvent(Traceable traceable, String eventName) {
-        final var span = spans.get(traceable.getSpanId());
+        final var span = getSpan(traceable);
         if (span != null) {
             span.addEvent(eventName);
         }
